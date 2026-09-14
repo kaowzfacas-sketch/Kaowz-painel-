@@ -1,9 +1,9 @@
 /* ============================================================
-   CONFIGURAÇÃO DO SUPABASE — preencha com os dados do seu projeto
-   (Settings > API no painel do Supabase)
+   CONFIGURAÇÃO DO SUPABASE — já preenchida com os dados do projeto
+   wagllubpaeuizkqfvdlx (Settings > API caso precise trocar)
    ============================================================ */
-const SUPABASE_URL = 'COLE_AQUI_A_URL_DO_SEU_PROJETO';       // ex: https://xxxxxxxx.supabase.co
-const SUPABASE_ANON_KEY = 'COLE_AQUI_A_CHAVE_ANON_PUBLIC';    // chave "anon public", não a "service_role"
+const SUPABASE_URL = 'https://wagllubpaeuizkqfvdlx.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndhZ2xsdWJwYWV1aXprcWZ2ZGx4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0MTA0NTAsImV4cCI6MjEwNDk4NjQ1MH0.fmfvSQmXKY3gzYjb0z69Zv7pbtSbfeh3-PGpO8Fvrmo';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const TABLE = 'kaowz_plan_entries';
 
