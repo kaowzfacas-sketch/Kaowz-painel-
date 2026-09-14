@@ -19,8 +19,6 @@ const CATS = Object.keys(PLAN_CONFIG);
 let PLAN = { encomendadas:[], producao:[], expedicoes:[], envios:[], caixas:[], espumas:[] };
 let activePlanTab = 'encomendadas';
 let activePeriod = 'week';
-let demoOn = false;
-let PLAN_BACKUP = null;
 let charts = {};
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -60,7 +58,6 @@ async function loadData(){
   });
 }
 async function insertRow(cat, row){
-  if(demoOn) return;
   const { error } = await sb.from(TABLE).insert({
     id: row.id, category: cat, data_registro: row.data, lote: row.lote,
     planejado: qty(row.planejado), realizado: qty(row.realizado),
@@ -69,12 +66,10 @@ async function insertRow(cat, row){
   if(error) throw error;
 }
 async function updateRealizado(id, realizado){
-  if(demoOn) return;
   const { error } = await sb.from(TABLE).update({ realizado: qty(realizado) }).eq('id', id);
   if(error) throw error;
 }
 async function deleteRow(id){
-  if(demoOn) return;
   const { error } = await sb.from(TABLE).delete().eq('id', id);
   if(error) throw error;
 }
@@ -390,32 +385,6 @@ function attachPlanHandlers(){
   });
 }
 
-/* ---------------- Demo preview (not saved) ---------------- */
-function addDays(iso, n){ const d = new Date(iso+'T00:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
-function sampleFor(cat){
-  const t = todayISO();
-  const sets = {
-    encomendadas: [{lote:'L66',planejado:20,realizado:0,entrega:addDays(t,12)},{lote:'L67',planejado:15,realizado:0,entrega:addDays(t,25)}],
-    producao:     [{lote:'L63',planejado:42,realizado:18,obs:'Aguardando cabos'},{lote:'L64',planejado:42,realizado:0,obs:''},{lote:'L65',planejado:39,realizado:39,obs:'Lote finalizado'}],
-    expedicoes:   [{lote:'L63',planejado:42,realizado:18},{lote:'L64',planejado:42,realizado:0}],
-    envios:       [{lote:'L63',planejado:42,realizado:10}],
-    caixas:       [{lote:'L63',planejado:42,realizado:30},{lote:'L64',planejado:42,realizado:0}],
-    espumas:      [{lote:'L63',planejado:42,realizado:25}],
-  };
-  return sets[cat].map(r => ({ id:uid(), data:t, ...r }));
-}
-document.getElementById('demoToggle').addEventListener('click', () => {
-  const btn = document.getElementById('demoToggle');
-  if(!demoOn){
-    PLAN_BACKUP = JSON.parse(JSON.stringify(PLAN));
-    CATS.forEach(cat => PLAN[cat] = sampleFor(cat));
-    demoOn = true; btn.textContent = 'Limpar exemplo';
-  } else {
-    PLAN = PLAN_BACKUP; demoOn = false; btn.textContent = 'Ver com exemplo';
-  }
-  renderPlanPanel(); renderKPIs();
-});
-
 document.getElementById('finalizarBtn').addEventListener('click', renderDesempenho);
 
 document.getElementById('periodToggle').addEventListener('click', e => {
@@ -436,6 +405,4 @@ document.getElementById('planTabs').addEventListener('click', e => {
   await loadData();
   renderKPIs();
   renderPlanPanel();
-  const allEmpty = CATS.every(cat => PLAN[cat].length === 0);
-  if(allEmpty) document.getElementById('demoToggle').click();
 })();
