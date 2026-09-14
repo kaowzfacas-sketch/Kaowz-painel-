@@ -400,6 +400,64 @@ document.getElementById('planTabs').addEventListener('click', e => {
   renderPlanPanel();
 });
 
+/* ---------------- Relatório (impressão / PDF) ---------------- */
+function dateToISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function periodLabel(range){
+  if(activePeriod === 'week'){
+    return `Semana de ${fmtDate(dateToISO(range[0]))} a ${fmtDate(dateToISO(range[1]))}`;
+  }
+  const meses = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  return `Mês de ${meses[range[0].getMonth()]}/${range[0].getFullYear()}`;
+}
+function gerarRelatorio(){
+  const range = currentRange();
+  const geradoEm = fmtDate(todayISO()) + ' ' + new Date().toTimeString().slice(0,5);
+
+  let html = `
+    <div class="relatorio-title">KAOWZ — Relatório de Operação</div>
+    <div class="relatorio-sub">${esc(periodLabel(range))} · Gerado em ${geradoEm}</div>
+    <div class="relatorio-section">
+      <h3>Resumo Geral</h3>
+      <table class="relatorio-table">
+        <thead><tr><th>Categoria</th><th>Planejado</th><th>Entregue</th><th>Pendente</th><th>Desempenho</th></tr></thead>
+        <tbody>
+          ${CATS.map(cat => {
+            const rows = PLAN[cat].filter(r => inRange(r.data, range));
+            const planejado = rows.reduce((s,r)=>s+qty(r.planejado),0);
+            const entregue = rows.reduce((s,r)=>s+qty(r.realizado),0);
+            const pendente = entregue - planejado;
+            const desempenho = planejado>0 ? Math.round((entregue/planejado)*100) : 0;
+            return `<tr><td>${esc(PLAN_CONFIG[cat].label)}</td><td>${planejado}</td><td>${entregue}</td><td>${pendente}</td><td>${cat==='encomendadas'?'—':desempenho+'%'}</td></tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  CATS.forEach(cat => {
+    const isEnc = cat === 'encomendadas';
+    const isProd = cat === 'producao';
+    const rows = PLAN[cat].filter(r => inRange(r.data, range)).sort((a,b)=>(b.data||'').localeCompare(a.data||''));
+    const cols = 5 + (isEnc?1:0) + (isProd?1:0);
+    html += `
+      <div class="relatorio-section">
+        <h3>Detalhe — ${esc(PLAN_CONFIG[cat].label)}</h3>
+        <table class="relatorio-table">
+          <thead><tr><th>Data</th><th>Lote</th>${isEnc?'<th>Entrega</th>':''}${isProd?'<th>Observação</th>':''}<th>Planejado</th><th>Entregue</th><th>Pendente</th></tr></thead>
+          <tbody>
+            ${rows.length ? rows.map(r => {
+              const p = qty(r.realizado) - qty(r.planejado);
+              return `<tr><td>${fmtDate(r.data)}</td><td>${esc(r.lote)}</td>${isEnc?`<td>${fmtDate(r.entrega)}</td>`:''}${isProd?`<td>${r.obs?esc(r.obs):'—'}</td>`:''}<td>${r.planejado}</td><td>${r.realizado||0}</td><td>${p}</td></tr>`;
+            }).join('') : `<tr><td colspan="${cols}">Sem lançamentos neste período.</td></tr>`}
+          </tbody>
+        </table>
+      </div>`;
+  });
+
+  document.getElementById('relatorioArea').innerHTML = html;
+  window.print();
+}
+document.getElementById('relatorioBtn').addEventListener('click', gerarRelatorio);
+
 (async function init(){
   document.getElementById('kpiStrip').innerHTML = `<div style="color:var(--text-dim);padding:20px 4px;">Carregando dados…</div>`;
   await loadData();
