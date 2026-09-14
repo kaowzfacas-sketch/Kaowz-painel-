@@ -1,4 +1,4 @@
-  :root{
+:root{
     --bg:#0B0B0C; --surface:#151517; --surface-2:#1D1E21;
     --orange:#FF6A1A; --orange-dim:#C2560A;
     --text:#F2F1EE; --text-dim:#8E8D89; --border:#2A2B2E;
@@ -86,7 +86,6 @@
 
     .section-title{font-size:15px;margin:30px 0 12px;padding-top:16px;gap:8px 10px;}
     #finalizarBtn{margin-left:0;width:100%;order:3;text-align:center;}
-    #demoToggle{order:2;}
 
     .panel{padding:14px;}
     .panel .chart-box{height:170px;}
