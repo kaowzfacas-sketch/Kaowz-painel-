@@ -12,13 +12,15 @@ const MESES_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho',
 const PLAN_CONFIG = {
   encomendadas: { label:'Facas Encomendadas' },
   producao:     { label:'Facas em Produção' },
+  gravacao_laser: { label:'Gravação a Laser' },
   expedicoes:   { label:'Expedições' },
+  pos_venda:    { label:'Pós-venda' },
   envios:       { label:'Envios' },
   caixas:       { label:'Caixas' },
   espumas:      { label:'Espumas' },
 };
 const CATS = Object.keys(PLAN_CONFIG);
-let PLAN = { encomendadas:[], producao:[], expedicoes:[], envios:[], caixas:[], espumas:[] };
+let PLAN = { encomendadas:[], producao:[], gravacao_laser:[], expedicoes:[], pos_venda:[], envios:[], caixas:[], espumas:[] };
 let ALL_ENTRIES = [];   // todos os lotes, fechados ou não (fonte pros históricos)
 let CLOSURES = [];      // todos os fechamentos (semana/mês/ano)
 let activePlanTab = 'encomendadas';
