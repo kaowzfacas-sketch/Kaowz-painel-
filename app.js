@@ -76,6 +76,16 @@ function aggregateEntries(closureIds){
   const entregue = rows.reduce((s,r)=>s+qty(r.realizado),0);
   return { planejado, entregue, pendente: entregue - planejado };
 }
+function rowsByCatFromClosures(closureIds){
+  const set = new Set(closureIds);
+  const rowsByCat = {};
+  CATS.forEach(cat => { rowsByCat[cat] = []; });
+  ALL_ENTRIES.filter(r => set.has(r.closure_id)).forEach(r => {
+    if(!rowsByCat[r.category]) return;
+    rowsByCat[r.category].push({ id:r.id, data:r.data_registro, lote:r.lote, planejado:r.planejado, realizado:r.realizado, entrega:r.entrega||undefined, obs:r.obs||undefined });
+  });
+  return rowsByCat;
+}
 
 /* ---------------- Fechamentos (Semana → Mês → Ano) ---------------- */
 async function closeWeek(){
@@ -254,67 +264,45 @@ function legendHTML(items){
   </div>`;
 }
 
-/* ---------------- Desempenho (gerado ao Finalizar) ---------------- */
+/* ---------------- Desempenho: widget genérico (Geral + por categoria) ---------------- */
+// rowsByCat = { cat: [{id,data,lote,planejado,realizado,entrega,obs}, ...], ... }
+// Usado tanto pra semana ao vivo quanto pro histórico (mês inteiro ou uma semana fechada específica).
 let desempenhoGenerated = false;
-let activeDesempenhoTab = 'geral';
+let liveDesempenhoTab = { value:'geral' };
+let mesWidgetTabs = {};    // monthKey -> {value:'geral'}
+let semanaWidgetTabs = {}; // closureId -> {value:'geral'}
+let semanaExpanded = {};   // closureId -> bool
 
-function desempenhoTabsHTML(){
-  const tabs = [{ key:'geral', label:'Geral' }, ...CATS.map(c => ({ key:c, label:PLAN_CONFIG[c].label }))];
-  return `<div class="entry-tabs" id="desempenhoTabs" style="margin-bottom:0;">
-    ${tabs.map(t => `<button data-dtab="${t.key}" class="${activeDesempenhoTab===t.key?'active':''}">${t.label}</button>`).join('')}
-  </div>`;
-}
-
-function renderDesempenho(){
-  desempenhoGenerated = true;
-  const area = document.getElementById('desempenhoArea');
-  area.innerHTML = desempenhoTabsHTML() + `<div id="desempenhoContent" class="entry-panel"></div>`;
-  document.querySelectorAll('#desempenhoTabs button').forEach(btn => {
-    btn.addEventListener('click', () => {
-      activeDesempenhoTab = btn.dataset.dtab;
-      document.querySelectorAll('#desempenhoTabs button').forEach(b => b.classList.toggle('active', b===btn));
-      renderDesempenhoContent();
-    });
-  });
-  renderDesempenhoContent();
-}
-
-function renderDesempenhoContent(){
-  if(activeDesempenhoTab === 'geral') renderDesempenhoGeral();
-  else renderDesempenhoCategoria(activeDesempenhoTab);
-}
-
-function renderDesempenhoGeral(){
-  const range = currentRange();
+function buildDesempenhoGeralHTML(rowsByCat){
   const rows = CATS.map(cat => {
-    const filtered = PLAN[cat].filter(r => inRange(r.data, range));
-    const planejado = filtered.reduce((s,r)=>s+qty(r.planejado),0);
-    const entregue = filtered.reduce((s,r)=>s+qty(r.realizado),0);
+    const list = rowsByCat[cat] || [];
+    const planejado = list.reduce((s,r)=>s+qty(r.planejado),0);
+    const entregue = list.reduce((s,r)=>s+qty(r.realizado),0);
     return { cat, label:PLAN_CONFIG[cat].label, planejado, entregue, pendente: entregue - planejado,
       desempenho: planejado>0 ? Math.round((entregue/planejado)*100) : 0 };
   });
-
-  document.getElementById('desempenhoContent').innerHTML = `
+  const nonZero = rows.filter(r=>r.entregue>0);
+  return `
     <div class="charts">
       <div class="panel">
         <h3>Planejado vs. Entregue por Categoria</h3>
-        <div class="chart-box" id="chartDesempenho"></div>
+        <div class="chart-box">${svgBarChart(rows.map(r=>r.label), [{data:rows.map(r=>r.planejado)},{data:rows.map(r=>r.entregue)}], ['#3A3B3E','#FF6A1A'])}</div>
         ${legendHTML([{color:'#3A3B3E',label:'Planejado'},{color:'#FF6A1A',label:'Entregue'}])}
       </div>
       <div class="panel">
         <h3>Composição do Entregue</h3>
-        <div class="chart-box" id="chartComposicao"></div>
-        ${legendHTML(rows.filter(r=>r.entregue>0).map((r,i)=>({color:['#FF6A1A','#C2560A','#8A3B08','#5A5B5E','#8E8D89','#3A3B3E'][i%6],label:r.label})))}
+        <div class="chart-box">${svgDonut(nonZero.length?nonZero.map(r=>r.label):['Sem dados'], nonZero.length?nonZero.map(r=>r.entregue):[1], ['#FF6A1A','#C2560A','#8A3B08','#5A5B5E','#8E8D89','#3A3B3E'])}</div>
+        ${legendHTML(nonZero.map((r,i)=>({color:['#FF6A1A','#C2560A','#8A3B08','#5A5B5E','#8E8D89','#3A3B3E'][i%6],label:r.label})))}
       </div>
     </div>
     <div class="panel">
-      <h3>Resumo do Período</h3>
+      <h3>Resumo</h3>
       <div class="table-scroll">
       <table class="desempenho-table">
         <thead><tr><th>Categoria</th><th>Planejado</th><th>Entregue</th><th>Pendente</th><th>Desempenho</th></tr></thead>
         <tbody>
           ${rows.map(r => `<tr>
-            <td>${r.label}</td><td>${r.planejado}</td><td>${r.entregue}</td>
+            <td>${esc(r.label)}</td><td>${r.planejado}</td><td>${r.entregue}</td>
             <td class="${r.pendente<0?'pendente-neg':'pendente-pos'}">${r.pendente}</td>
             <td>${r.cat==='encomendadas' ? '—' : r.desempenho+'%'}</td>
           </tr>`).join('')}
@@ -322,26 +310,12 @@ function renderDesempenhoGeral(){
       </table>
       </div>
     </div>`;
-
-  document.getElementById('chartDesempenho').innerHTML = svgBarChart(
-    rows.map(r=>r.label),
-    [ { data: rows.map(r=>r.planejado) }, { data: rows.map(r=>r.entregue) } ],
-    ['#3A3B3E', '#FF6A1A']
-  );
-
-  const nonZero = rows.filter(r=>r.entregue>0);
-  document.getElementById('chartComposicao').innerHTML = svgDonut(
-    nonZero.length ? nonZero.map(r=>r.label) : ['Sem dados'],
-    nonZero.length ? nonZero.map(r=>r.entregue) : [1],
-    ['#FF6A1A','#C2560A','#8A3B08','#5A5B5E','#8E8D89','#3A3B3E']
-  );
 }
 
-function renderDesempenhoCategoria(cat){
-  const range = currentRange();
+function buildDesempenhoCategoriaHTML(cat, rowsByCat, extraCards){
   const showDesempenho = cat !== 'encomendadas';
   const isEncomendadas = cat === 'encomendadas';
-  const rows = PLAN[cat].filter(r => inRange(r.data, range));
+  const rows = rowsByCat[cat] || [];
   const totalPlan = rows.reduce((s,r)=>s+qty(r.planejado),0);
   const totalReal = rows.reduce((s,r)=>s+qty(r.realizado),0);
   const totalPend = totalReal - totalPlan;
@@ -353,27 +327,15 @@ function renderDesempenhoCategoria(cat){
     { val:totalPend, lbl:'Pendente', dim:true },
   ];
   if(showDesempenho) cards.push({ val:`${desempenho}%`, lbl:'Desempenho' });
+  if(extraCards) cards.push(...extraCards);
 
-  // Encomendadas: prazo mais distante entre TODOS os lotes registrados (não só o período)
-  // e total de facas a produzir até esse prazo.
-  let maxEntrega = null, totalAteLa = 0;
-  if(isEncomendadas){
-    const comEntrega = PLAN[cat].filter(r => r.entrega);
-    if(comEntrega.length){
-      maxEntrega = comEntrega.reduce((m,r) => r.entrega > m ? r.entrega : m, comEntrega[0].entrega);
-      totalAteLa = comEntrega.reduce((s,r) => s + qty(r.planejado), 0);
-    }
-    cards.push({ val: maxEntrega ? fmtDate(maxEntrega) : '—', lbl:'Prazo Mais Distante (Último Lote)' });
-    cards.push({ val: totalAteLa, lbl:'Total de Facas a Produzir até Lá' });
-  }
-
-  document.getElementById('desempenhoContent').innerHTML = `
+  return `
     <div class="kpi-scroll" style="margin-bottom:20px;">
       ${cards.map(c => `<div class="kpi ${c.dim?'dim':''}"><div class="val">${c.val}</div><div class="lbl">${c.lbl}</div></div>`).join('')}
     </div>
     <div class="panel" style="margin-bottom:16px;">
-      <h3>Planejado vs. Entregue por Lote — ${PLAN_CONFIG[cat].label}</h3>
-      <div class="chart-box" id="chartCat"></div>
+      <h3>Planejado vs. Entregue por Lote — ${esc(PLAN_CONFIG[cat].label)}</h3>
+      <div class="chart-box">${svgBarChart(rows.length?rows.map(r=>r.lote):['—'], [{data:rows.length?rows.map(r=>qty(r.planejado)):[0]},{data:rows.length?rows.map(r=>qty(r.realizado)):[0]}], ['#3A3B3E','#FF6A1A'])}</div>
       ${legendHTML([{color:'#3A3B3E',label:'Planejado'},{color:'#FF6A1A',label:'Entregue'}])}
     </div>
     <div class="panel">
@@ -385,20 +347,56 @@ function renderDesempenhoCategoria(cat){
           ${rows.length ? rows.map(r => {
             const p = qty(r.realizado) - qty(r.planejado);
             const d = qty(r.planejado)>0 ? Math.round((qty(r.realizado)/qty(r.planejado))*100) : 0;
-            return `<tr><td>${r.lote}</td>${isEncomendadas?`<td>${fmtDate(r.entrega)}</td>`:''}<td>${r.planejado}</td><td>${r.realizado||0}</td>
+            return `<tr><td>${esc(r.lote)}</td>${isEncomendadas?`<td>${fmtDate(r.entrega)}</td>`:''}<td>${r.planejado}</td><td>${r.realizado||0}</td>
               <td class="${p<0?'pendente-neg':'pendente-pos'}">${p}</td>${showDesempenho?`<td>${d}%</td>`:''}</tr>`;
-          }).join('') : `<tr class="empty-row"><td colspan="${(showDesempenho?5:4)+(isEncomendadas?1:0)}">Sem lançamentos neste período.</td></tr>`}
+          }).join('') : `<tr class="empty-row"><td colspan="${(showDesempenho?5:4)+(isEncomendadas?1:0)}">Sem lançamentos.</td></tr>`}
         </tbody>
       </table>
       </div>
     </div>`;
-
-  document.getElementById('chartCat').innerHTML = svgBarChart(
-    rows.length ? rows.map(r=>r.lote) : ['—'],
-    [ { data: rows.length ? rows.map(r=>qty(r.planejado)) : [0] }, { data: rows.length ? rows.map(r=>qty(r.realizado)) : [0] } ],
-    ['#3A3B3E', '#FF6A1A']
-  );
 }
+
+// Renderiza um widget completo (abas Geral + categorias) dentro de containerEl.
+// activeTabRef é um objeto {value:'geral'} que guarda o estado da aba pra esse widget específico.
+function renderDesempenhoWidget(containerEl, rowsByCat, activeTabRef, extraCardsByCat){
+  if(!containerEl) return;
+  const tabs = [{ key:'geral', label:'Geral' }, ...CATS.map(c => ({ key:c, label:PLAN_CONFIG[c].label }))];
+  const tabsHTML = `<div class="entry-tabs" style="margin-bottom:0;">
+    ${tabs.map(t => `<button data-wtab="${t.key}" class="${activeTabRef.value===t.key?'active':''}">${t.label}</button>`).join('')}
+  </div>`;
+  const contentHTML = activeTabRef.value === 'geral'
+    ? buildDesempenhoGeralHTML(rowsByCat)
+    : buildDesempenhoCategoriaHTML(activeTabRef.value, rowsByCat, extraCardsByCat && extraCardsByCat[activeTabRef.value]);
+  containerEl.innerHTML = tabsHTML + `<div class="entry-panel">${contentHTML}</div>`;
+  containerEl.querySelectorAll('[data-wtab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeTabRef.value = btn.dataset.wtab;
+      renderDesempenhoWidget(containerEl, rowsByCat, activeTabRef, extraCardsByCat);
+    });
+  });
+}
+
+function renderDesempenho(){
+  desempenhoGenerated = true;
+  const range = getWeekRange();
+  const rowsByCat = {};
+  CATS.forEach(cat => { rowsByCat[cat] = PLAN[cat].filter(r => inRange(r.data, range)); });
+
+  // Encomendadas na semana ao vivo: cards extras olhando pra frente (todos os lotes com entrega, não só o período).
+  const comEntrega = PLAN.encomendadas.filter(r => r.entrega);
+  let maxEntrega = null, totalAteLa = 0;
+  if(comEntrega.length){
+    maxEntrega = comEntrega.reduce((m,r) => r.entrega > m ? r.entrega : m, comEntrega[0].entrega);
+    totalAteLa = comEntrega.reduce((s,r) => s + qty(r.planejado), 0);
+  }
+  const extraCardsByCat = { encomendadas: [
+    { val: maxEntrega ? fmtDate(maxEntrega) : '—', lbl:'Prazo Mais Distante (Último Lote)' },
+    { val: totalAteLa, lbl:'Total de Facas a Produzir até Lá' },
+  ]};
+
+  renderDesempenhoWidget(document.getElementById('desempenhoArea'), rowsByCat, liveDesempenhoTab, extraCardsByCat);
+}
+
 
 /* ---------------- Histórico: Mês (semanas fechadas) e Ano (meses fechados) ---------------- */
 function groupOpenClosuresByMonth(){
@@ -435,27 +433,50 @@ function renderMesArea(){
     const totals = aggregateEntries(g.items.map(c=>c.id));
     const sorted = [...g.items].sort((a,b) => (a.numero||0) - (b.numero||0));
     return `
-      <div class="panel" style="margin-bottom:16px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+      <div class="panel" style="margin-bottom:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
           <h3 style="margin:0;">${esc(label)} <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(${g.items.length} semana${g.items.length>1?'s':''} fechada${g.items.length>1?'s':''})</span></h3>
           <button class="btn-ghost" data-action="fechar-mes" data-inicio="${dateToISO(monthStart)}" data-fim="${dateToISO(monthEnd)}" data-titulo="${esc(label)}">Fechar Mês</button>
         </div>
+        <div data-month-widget="${g.key}"></div>
+        <h4 style="margin:22px 0 10px;font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:0.4px;color:var(--text-dim);text-transform:uppercase;">Semanas deste mês</h4>
         <div class="table-scroll">
         <table class="desempenho-table">
-          <thead><tr><th>Semana</th><th>Período</th><th>Planejado</th><th>Entregue</th><th>Pendente</th></tr></thead>
+          <thead><tr><th>Semana</th><th>Período</th><th>Planejado</th><th>Entregue</th><th>Pendente</th><th></th></tr></thead>
           <tbody>
             ${sorted.map(c => {
               const t = aggregateEntries([c.id]);
-              return `<tr><td>${esc(c.titulo)}</td><td>${fmtDate(c.data_inicio)} – ${fmtDate(c.data_fim)}</td><td>${t.planejado}</td><td>${t.entregue}</td><td class="${t.pendente<0?'pendente-neg':'pendente-pos'}">${t.pendente}</td></tr>`;
+              const row = `<tr><td>${esc(c.titulo)}</td><td>${fmtDate(c.data_inicio)} – ${fmtDate(c.data_fim)}</td><td>${t.planejado}</td><td>${t.entregue}</td><td class="${t.pendente<0?'pendente-neg':'pendente-pos'}">${t.pendente}</td><td><button class="btn-ghost" data-action="toggle-semana" data-closure="${c.id}">${semanaExpanded[c.id]?'Ocultar':'Ver Gráficos'}</button></td></tr>`;
+              const expanded = semanaExpanded[c.id] ? `<tr><td colspan="6" style="padding:14px 4px;"><div data-semana-widget="${c.id}"></div></td></tr>` : '';
+              return row + expanded;
             }).join('')}
           </tbody>
-          <tfoot><tr><td colspan="2">Total do mês</td><td>${totals.planejado}</td><td>${totals.entregue}</td><td class="${totals.pendente<0?'pendente-neg':'pendente-pos'}">${totals.pendente}</td></tr></tfoot>
+          <tfoot><tr><td colspan="2">Total do mês</td><td>${totals.planejado}</td><td>${totals.entregue}</td><td class="${totals.pendente<0?'pendente-neg':'pendente-pos'}">${totals.pendente}</td><td></td></tr></tfoot>
         </table>
         </div>
       </div>`;
   }).join('');
+
+  groups.forEach(g => {
+    const closureIds = g.items.map(c=>c.id);
+    if(!mesWidgetTabs[g.key]) mesWidgetTabs[g.key] = { value:'geral' };
+    renderDesempenhoWidget(area.querySelector(`[data-month-widget="${g.key}"]`), rowsByCatFromClosures(closureIds), mesWidgetTabs[g.key]);
+  });
+  CLOSURES.filter(c => c.tipo==='semana' && semanaExpanded[c.id]).forEach(c => {
+    const el = area.querySelector(`[data-semana-widget="${c.id}"]`);
+    if(!el) return;
+    if(!semanaWidgetTabs[c.id]) semanaWidgetTabs[c.id] = { value:'geral' };
+    renderDesempenhoWidget(el, rowsByCatFromClosures([c.id]), semanaWidgetTabs[c.id]);
+  });
+
   area.querySelectorAll('[data-action="fechar-mes"]').forEach(btn => {
     btn.addEventListener('click', () => closeMonth(btn.dataset.inicio, btn.dataset.fim, btn.dataset.titulo));
+  });
+  area.querySelectorAll('[data-action="toggle-semana"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      semanaExpanded[btn.dataset.closure] = !semanaExpanded[btn.dataset.closure];
+      renderMesArea();
+    });
   });
 }
 
