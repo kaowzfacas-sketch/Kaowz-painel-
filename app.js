@@ -272,6 +272,8 @@ let liveDesempenhoTab = { value:'geral' };
 let mesWidgetTabs = {};    // monthKey -> {value:'geral'}
 let semanaWidgetTabs = {}; // closureId -> {value:'geral'}
 let semanaExpanded = {};   // closureId -> bool
+let anoWidgetTabs = {};    // yearKey -> {value:'geral'}
+let mesExpanded = {};      // closureId (tipo:mes) -> bool
 
 function buildDesempenhoGeralHTML(rowsByCat){
   const rows = CATS.map(cat => {
@@ -436,7 +438,10 @@ function renderMesArea(){
       <div class="panel" style="margin-bottom:20px;">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
           <h3 style="margin:0;">${esc(label)} <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(${g.items.length} semana${g.items.length>1?'s':''} fechada${g.items.length>1?'s':''})</span></h3>
-          <button class="btn-ghost" data-action="fechar-mes" data-inicio="${dateToISO(monthStart)}" data-fim="${dateToISO(monthEnd)}" data-titulo="${esc(label)}">Fechar Mês</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-ghost" data-action="relatorio-mes" data-key="${g.key}">Gerar Relatório</button>
+            <button class="btn-ghost" data-action="fechar-mes" data-inicio="${dateToISO(monthStart)}" data-fim="${dateToISO(monthEnd)}" data-titulo="${esc(label)}">Fechar Mês</button>
+          </div>
         </div>
         <div data-month-widget="${g.key}"></div>
         <h4 style="margin:22px 0 10px;font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:0.4px;color:var(--text-dim);text-transform:uppercase;">Semanas deste mês</h4>
@@ -461,6 +466,9 @@ function renderMesArea(){
     const closureIds = g.items.map(c=>c.id);
     if(!mesWidgetTabs[g.key]) mesWidgetTabs[g.key] = { value:'geral' };
     renderDesempenhoWidget(area.querySelector(`[data-month-widget="${g.key}"]`), rowsByCatFromClosures(closureIds), mesWidgetTabs[g.key]);
+    const label = `${MESES_PT[g.month]}/${g.year}`;
+    const relBtn = area.querySelector(`[data-action="relatorio-mes"][data-key="${g.key}"]`);
+    if(relBtn) relBtn.addEventListener('click', () => imprimirRelatorio(`Mês de ${label}`, rowsByCatFromClosures(closureIds)));
   });
   CLOSURES.filter(c => c.tipo==='semana' && semanaExpanded[c.id]).forEach(c => {
     const el = area.querySelector(`[data-semana-widget="${c.id}"]`);
@@ -494,28 +502,58 @@ function renderAnoArea(){
     const totals = aggregateEntries(weekIdsInYear);
     const sorted = [...g.items].sort((a,b) => a.data_inicio < b.data_inicio ? 1 : -1);
     return `
-      <div class="panel" style="margin-bottom:16px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+      <div class="panel" style="margin-bottom:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
           <h3 style="margin:0;">${g.year} <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(${g.items.length} mês${g.items.length>1?'es':''} fechado${g.items.length>1?'s':''})</span></h3>
-          <button class="btn-ghost" data-action="fechar-ano" data-inicio="${dateToISO(yearStart)}" data-fim="${dateToISO(yearEnd)}" data-titulo="${g.year}">Fechar Ano</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-ghost" data-action="relatorio-ano" data-key="${g.key}">Gerar Relatório</button>
+            <button class="btn-ghost" data-action="fechar-ano" data-inicio="${dateToISO(yearStart)}" data-fim="${dateToISO(yearEnd)}" data-titulo="${g.year}">Fechar Ano</button>
+          </div>
         </div>
+        <div data-year-widget="${g.key}"></div>
+        <h4 style="margin:22px 0 10px;font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:0.4px;color:var(--text-dim);text-transform:uppercase;">Meses deste ano</h4>
         <div class="table-scroll">
         <table class="desempenho-table">
-          <thead><tr><th>Mês</th><th>Período</th><th>Planejado</th><th>Entregue</th><th>Pendente</th></tr></thead>
+          <thead><tr><th>Mês</th><th>Período</th><th>Planejado</th><th>Entregue</th><th>Pendente</th><th></th></tr></thead>
           <tbody>
             ${sorted.map(c => {
               const weekIds = CLOSURES.filter(w => w.tipo==='semana' && w.parent_id===c.id).map(w=>w.id);
               const t = aggregateEntries(weekIds);
-              return `<tr><td>${esc(c.titulo)}</td><td>${fmtDate(c.data_inicio)} – ${fmtDate(c.data_fim)}</td><td>${t.planejado}</td><td>${t.entregue}</td><td class="${t.pendente<0?'pendente-neg':'pendente-pos'}">${t.pendente}</td></tr>`;
+              const row = `<tr><td>${esc(c.titulo)}</td><td>${fmtDate(c.data_inicio)} – ${fmtDate(c.data_fim)}</td><td>${t.planejado}</td><td>${t.entregue}</td><td class="${t.pendente<0?'pendente-neg':'pendente-pos'}">${t.pendente}</td><td><button class="btn-ghost" data-action="toggle-mes" data-closure="${c.id}">${mesExpanded[c.id]?'Ocultar':'Ver Gráficos'}</button></td></tr>`;
+              const expanded = mesExpanded[c.id] ? `<tr><td colspan="6" style="padding:14px 4px;"><div data-mes-widget="${c.id}"></div></td></tr>` : '';
+              return row + expanded;
             }).join('')}
           </tbody>
-          <tfoot><tr><td colspan="2">Total do ano</td><td>${totals.planejado}</td><td>${totals.entregue}</td><td class="${totals.pendente<0?'pendente-neg':'pendente-pos'}">${totals.pendente}</td></tr></tfoot>
+          <tfoot><tr><td colspan="2">Total do ano</td><td>${totals.planejado}</td><td>${totals.entregue}</td><td class="${totals.pendente<0?'pendente-neg':'pendente-pos'}">${totals.pendente}</td><td></td></tr></tfoot>
         </table>
         </div>
       </div>`;
   }).join('');
+
+  groups.forEach(g => {
+    const monthIds = g.items.map(c=>c.id);
+    const weekIdsInYear = CLOSURES.filter(c => c.tipo==='semana' && monthIds.includes(c.parent_id)).map(c=>c.id);
+    if(!anoWidgetTabs[g.key]) anoWidgetTabs[g.key] = { value:'geral' };
+    renderDesempenhoWidget(area.querySelector(`[data-year-widget="${g.key}"]`), rowsByCatFromClosures(weekIdsInYear), anoWidgetTabs[g.key]);
+    const relBtn = area.querySelector(`[data-action="relatorio-ano"][data-key="${g.key}"]`);
+    if(relBtn) relBtn.addEventListener('click', () => imprimirRelatorio(`Ano de ${g.year}`, rowsByCatFromClosures(weekIdsInYear)));
+  });
+  CLOSURES.filter(c => c.tipo==='mes' && mesExpanded[c.id]).forEach(c => {
+    const el = area.querySelector(`[data-mes-widget="${c.id}"]`);
+    if(!el) return;
+    const weekIds = CLOSURES.filter(w => w.tipo==='semana' && w.parent_id===c.id).map(w=>w.id);
+    if(!mesWidgetTabs[c.id]) mesWidgetTabs[c.id] = { value:'geral' };
+    renderDesempenhoWidget(el, rowsByCatFromClosures(weekIds), mesWidgetTabs[c.id]);
+  });
+
   area.querySelectorAll('[data-action="fechar-ano"]').forEach(btn => {
     btn.addEventListener('click', () => closeYear(btn.dataset.inicio, btn.dataset.fim, btn.dataset.titulo));
+  });
+  area.querySelectorAll('[data-action="toggle-mes"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      mesExpanded[btn.dataset.closure] = !mesExpanded[btn.dataset.closure];
+      renderAnoArea();
+    });
   });
 }
 
@@ -652,21 +690,13 @@ document.getElementById('planTabs').addEventListener('click', e => {
   renderPlanPanel();
 });
 
-/* ---------------- Relatório (impressão / PDF) ---------------- */
+/* ---------------- Relatório (impressão / PDF) — genérico ---------------- */
 function dateToISO(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
-function periodLabel(range){
-  if(activePeriod === 'week'){
-    return `Semana de ${fmtDate(dateToISO(range[0]))} a ${fmtDate(dateToISO(range[1]))}`;
-  }
-  const meses = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-  return `Mês de ${meses[range[0].getMonth()]}/${range[0].getFullYear()}`;
-}
-function gerarRelatorio(){
-  const range = currentRange();
-  const geradoEm = fmtDate(todayISO()) + ' ' + new Date().toTimeString().slice(0,5);
 
+function buildRelatorioHTML(titulo, rowsByCat){
+  const geradoEm = fmtDate(todayISO()) + ' ' + new Date().toTimeString().slice(0,5);
   const resumo = CATS.map(cat => {
-    const rows = PLAN[cat].filter(r => inRange(r.data, range));
+    const rows = rowsByCat[cat] || [];
     const planejado = rows.reduce((s,r)=>s+qty(r.planejado),0);
     const entregue = rows.reduce((s,r)=>s+qty(r.realizado),0);
     const desempenho = planejado>0 ? Math.round((entregue/planejado)*100) : 0;
@@ -676,7 +706,7 @@ function gerarRelatorio(){
 
   let html = `
     <div class="relatorio-title">KAOWZ — Relatório de Operação</div>
-    <div class="relatorio-sub">${esc(periodLabel(range))} · Gerado em ${geradoEm}</div>
+    <div class="relatorio-sub">${esc(titulo)} · Gerado em ${geradoEm}</div>
     <div class="relatorio-section">
       <h3>Planejado vs. Entregue por Categoria</h3>
       <div class="relatorio-chart">${svgBarChart(resumo.map(r=>r.label), [{data:resumo.map(r=>r.planejado)},{data:resumo.map(r=>r.entregue)}], ['#3A3B3E','#FF6A1A'])}</div>
@@ -700,7 +730,7 @@ function gerarRelatorio(){
   CATS.forEach(cat => {
     const isEnc = cat === 'encomendadas';
     const isProd = cat === 'producao';
-    const rows = PLAN[cat].filter(r => inRange(r.data, range)).sort((a,b)=>(b.data||'').localeCompare(a.data||''));
+    const rows = [...(rowsByCat[cat]||[])].sort((a,b)=>(b.data||'').localeCompare(a.data||''));
     const cols = 5 + (isEnc?1:0) + (isProd?1:0);
     html += `
       <div class="relatorio-section">
@@ -711,14 +741,23 @@ function gerarRelatorio(){
             ${rows.length ? rows.map(r => {
               const p = qty(r.realizado) - qty(r.planejado);
               return `<tr><td>${fmtDate(r.data)}</td><td>${esc(r.lote)}</td>${isEnc?`<td>${fmtDate(r.entrega)}</td>`:''}${isProd?`<td>${r.obs?esc(r.obs):'—'}</td>`:''}<td>${r.planejado}</td><td>${r.realizado||0}</td><td>${p}</td></tr>`;
-            }).join('') : `<tr><td colspan="${cols}">Sem lançamentos neste período.</td></tr>`}
+            }).join('') : `<tr><td colspan="${cols}">Sem lançamentos.</td></tr>`}
           </tbody>
         </table>
       </div>`;
   });
-
-  document.getElementById('relatorioArea').innerHTML = html;
+  return html;
+}
+function imprimirRelatorio(titulo, rowsByCat){
+  document.getElementById('relatorioArea').innerHTML = buildRelatorioHTML(titulo, rowsByCat);
   window.print();
+}
+
+function gerarRelatorio(){
+  const range = getWeekRange();
+  const rowsByCat = {};
+  CATS.forEach(cat => { rowsByCat[cat] = PLAN[cat].filter(r => inRange(r.data, range)); });
+  imprimirRelatorio(`Semana de ${fmtDate(dateToISO(range[0]))} a ${fmtDate(dateToISO(range[1]))}`, rowsByCat);
 }
 document.getElementById('relatorioBtn').addEventListener('click', gerarRelatorio);
 
