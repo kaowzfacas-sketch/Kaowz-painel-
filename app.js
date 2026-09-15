@@ -6,6 +6,8 @@ const SUPABASE_URL = 'https://wagllubpaeuizkqfvdlx.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndhZ2xsdWJwYWV1aXprcWZ2ZGx4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0MTA0NTAsImV4cCI6MjEwNDk4NjQ1MH0.fmfvSQmXKY3gzYjb0z69Zv7pbtSbfeh3-PGpO8Fvrmo';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const TABLE = 'kaowz_plan_entries';
+const CLOSURES_TABLE = 'kaowz_closures';
+const MESES_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
 const PLAN_CONFIG = {
   encomendadas: { label:'Facas Encomendadas' },
@@ -17,8 +19,10 @@ const PLAN_CONFIG = {
 };
 const CATS = Object.keys(PLAN_CONFIG);
 let PLAN = { encomendadas:[], producao:[], expedicoes:[], envios:[], caixas:[], espumas:[] };
+let ALL_ENTRIES = [];   // todos os lotes, fechados ou não (fonte pros históricos)
+let CLOSURES = [];      // todos os fechamentos (semana/mês/ano)
 let activePlanTab = 'encomendadas';
-let activePeriod = 'week';
+let activePeriod = 'week'; // 'week' (ao vivo) | 'month' (histórico) | 'year' (histórico)
 let charts = {};
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -45,10 +49,18 @@ function inRange(iso, range){
 function currentRange(){ return activePeriod === 'week' ? getWeekRange() : getMonthRange(); }
 
 async function loadData(){
+  const [entriesRes, closuresRes] = await Promise.all([
+    sb.from(TABLE).select('*').order('data_registro', { ascending:false }),
+    sb.from(CLOSURES_TABLE).select('*').order('data_inicio', { ascending:false }),
+  ]);
+  if(entriesRes.error){ console.error('Erro ao carregar lançamentos:', entriesRes.error); alert('Erro ao carregar dados: ' + entriesRes.error.message); return; }
+  if(closuresRes.error){ console.error('Erro ao carregar fechamentos:', closuresRes.error); alert('Erro ao carregar histórico: ' + closuresRes.error.message); return; }
+
+  ALL_ENTRIES = entriesRes.data || [];
+  CLOSURES = closuresRes.data || [];
+
   CATS.forEach(cat => PLAN[cat] = []);
-  const { data, error } = await sb.from(TABLE).select('*').order('data_registro', { ascending:false });
-  if(error){ console.error('Erro ao carregar dados do Supabase:', error); alert('Erro ao carregar dados: ' + error.message); return; }
-  (data || []).forEach(r => {
+  ALL_ENTRIES.filter(r => !r.closure_id).forEach(r => {
     if(!PLAN[r.category]) return;
     PLAN[r.category].push({
       id: r.id, data: r.data_registro, lote: r.lote,
@@ -56,6 +68,92 @@ async function loadData(){
       entrega: r.entrega || undefined, obs: r.obs || undefined,
     });
   });
+}
+function aggregateEntries(closureIds){
+  const set = new Set(closureIds);
+  const rows = ALL_ENTRIES.filter(r => set.has(r.closure_id));
+  const planejado = rows.reduce((s,r)=>s+qty(r.planejado),0);
+  const entregue = rows.reduce((s,r)=>s+qty(r.realizado),0);
+  return { planejado, entregue, pendente: entregue - planejado };
+}
+
+/* ---------------- Fechamentos (Semana → Mês → Ano) ---------------- */
+async function closeWeek(){
+  const range = getWeekRange();
+  const dataInicio = dateToISO(range[0]), dataFim = dateToISO(range[1]);
+  const liveInWeek = ALL_ENTRIES.filter(r => !r.closure_id && inRange(r.data_registro, range));
+  if(liveInWeek.length === 0){ alert('Não há lançamentos nesta semana para fechar.'); return; }
+  if(!confirm(`Isso vai arquivar ${liveInWeek.length} lançamento(s) desta semana (${fmtDate(dataInicio)} a ${fmtDate(dataFim)}) e limpar o Planejamento ao vivo. Confirmar?`)) return;
+
+  const monthStart = new Date(range[0].getFullYear(), range[0].getMonth(), 1);
+  const monthEnd = new Date(range[0].getFullYear(), range[0].getMonth()+1, 0);
+  const numero = CLOSURES.filter(c => c.tipo==='semana' && inRange(c.data_inicio, [monthStart, monthEnd])).length + 1;
+  const closureId = uid();
+
+  const { error: e1 } = await sb.from(CLOSURES_TABLE).insert({
+    id: closureId, tipo:'semana', titulo:`Semana ${numero}`, numero,
+    data_inicio: dataInicio, data_fim: dataFim, parent_id: null,
+  });
+  if(e1){ alert('Erro ao fechar semana: ' + e1.message); return; }
+
+  const { error: e2 } = await sb.from(TABLE).update({ closure_id: closureId })
+    .is('closure_id', null).gte('data_registro', dataInicio).lte('data_registro', dataFim);
+  if(e2){ alert('Erro ao arquivar lançamentos: ' + e2.message); return; }
+
+  await loadData();
+  renderPeriodArea();
+  renderPlanPanel();
+  alert(`Semana ${numero} fechada. Veja o histórico na aba MÊS.`);
+}
+
+async function closeMonth(monthStartISO, monthEndISO, defaultTitulo){
+  const monthRange = [new Date(monthStartISO+'T00:00:00'), new Date(monthEndISO+'T00:00:00')];
+  const weekClosures = CLOSURES.filter(c => c.tipo==='semana' && !c.parent_id && inRange(c.data_inicio, monthRange));
+  if(weekClosures.length === 0){ alert('Não há semanas fechadas para arquivar neste mês.'); return; }
+  const titulo = prompt('Título para este mês:', defaultTitulo);
+  if(titulo === null) return;
+  const tituloFinal = titulo.trim() || defaultTitulo;
+  if(!confirm(`Isso vai arquivar ${weekClosures.length} semana(s) sob o título "${tituloFinal}". Confirmar?`)) return;
+
+  const closureId = uid();
+  const { error: e1 } = await sb.from(CLOSURES_TABLE).insert({
+    id: closureId, tipo:'mes', titulo: tituloFinal, numero: null,
+    data_inicio: monthStartISO, data_fim: monthEndISO, parent_id: null,
+  });
+  if(e1){ alert('Erro ao fechar mês: ' + e1.message); return; }
+
+  const { error: e2 } = await sb.from(CLOSURES_TABLE).update({ parent_id: closureId })
+    .in('id', weekClosures.map(c => c.id));
+  if(e2){ alert('Erro ao vincular semanas ao mês: ' + e2.message); return; }
+
+  await loadData();
+  renderPeriodArea();
+  alert(`"${tituloFinal}" fechado. Veja o histórico na aba ANO.`);
+}
+
+async function closeYear(yearStartISO, yearEndISO, defaultTitulo){
+  const yearRange = [new Date(yearStartISO+'T00:00:00'), new Date(yearEndISO+'T00:00:00')];
+  const monthClosures = CLOSURES.filter(c => c.tipo==='mes' && !c.parent_id && inRange(c.data_inicio, yearRange));
+  if(monthClosures.length === 0){ alert('Não há meses fechados para arquivar neste ano.'); return; }
+  const titulo = prompt('Título para este ano:', defaultTitulo);
+  if(titulo === null) return;
+  const tituloFinal = titulo.trim() || defaultTitulo;
+  if(!confirm(`Isso vai arquivar ${monthClosures.length} mês(es) sob o título "${tituloFinal}". Confirmar?`)) return;
+
+  const closureId = uid();
+  const { error: e1 } = await sb.from(CLOSURES_TABLE).insert({
+    id: closureId, tipo:'ano', titulo: tituloFinal, numero: null,
+    data_inicio: yearStartISO, data_fim: yearEndISO, parent_id: null,
+  });
+  if(e1){ alert('Erro ao fechar ano: ' + e1.message); return; }
+
+  const { error: e2 } = await sb.from(CLOSURES_TABLE).update({ parent_id: closureId })
+    .in('id', monthClosures.map(c => c.id));
+  if(e2){ alert('Erro ao vincular meses ao ano: ' + e2.message); return; }
+
+  await loadData();
+  renderPeriodArea();
+  alert(`"${tituloFinal}" fechado.`);
 }
 async function insertRow(cat, row){
   const { error } = await sb.from(TABLE).insert({
@@ -302,6 +400,104 @@ function renderDesempenhoCategoria(cat){
   );
 }
 
+/* ---------------- Histórico: Mês (semanas fechadas) e Ano (meses fechados) ---------------- */
+function groupOpenClosuresByMonth(){
+  const groups = {};
+  CLOSURES.filter(c => c.tipo==='semana' && !c.parent_id).forEach(c => {
+    const d = new Date(c.data_inicio+'T00:00:00');
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    if(!groups[key]) groups[key] = { key, year:d.getFullYear(), month:d.getMonth(), items:[] };
+    groups[key].items.push(c);
+  });
+  return Object.values(groups).sort((a,b) => b.key.localeCompare(a.key));
+}
+function groupOpenClosuresByYear(){
+  const groups = {};
+  CLOSURES.filter(c => c.tipo==='mes' && !c.parent_id).forEach(c => {
+    const d = new Date(c.data_inicio+'T00:00:00');
+    const key = String(d.getFullYear());
+    if(!groups[key]) groups[key] = { key, year:d.getFullYear(), items:[] };
+    groups[key].items.push(c);
+  });
+  return Object.values(groups).sort((a,b) => b.key.localeCompare(a.key));
+}
+
+function renderMesArea(){
+  const groups = groupOpenClosuresByMonth();
+  const area = document.getElementById('desempenhoArea');
+  if(groups.length === 0){
+    area.innerHTML = `<div class="panel"><div class="placeholder">Nenhuma semana fechada ainda. Feche a semana atual na aba SEMANA pra começar a acumular o histórico mensal.</div></div>`;
+    return;
+  }
+  area.innerHTML = groups.map(g => {
+    const monthStart = new Date(g.year, g.month, 1), monthEnd = new Date(g.year, g.month+1, 0);
+    const label = `${MESES_PT[g.month]}/${g.year}`;
+    const totals = aggregateEntries(g.items.map(c=>c.id));
+    const sorted = [...g.items].sort((a,b) => (a.numero||0) - (b.numero||0));
+    return `
+      <div class="panel" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+          <h3 style="margin:0;">${esc(label)} <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(${g.items.length} semana${g.items.length>1?'s':''} fechada${g.items.length>1?'s':''})</span></h3>
+          <button class="btn-ghost" data-action="fechar-mes" data-inicio="${dateToISO(monthStart)}" data-fim="${dateToISO(monthEnd)}" data-titulo="${esc(label)}">Fechar Mês</button>
+        </div>
+        <div class="table-scroll">
+        <table class="desempenho-table">
+          <thead><tr><th>Semana</th><th>Período</th><th>Planejado</th><th>Entregue</th><th>Pendente</th></tr></thead>
+          <tbody>
+            ${sorted.map(c => {
+              const t = aggregateEntries([c.id]);
+              return `<tr><td>${esc(c.titulo)}</td><td>${fmtDate(c.data_inicio)} – ${fmtDate(c.data_fim)}</td><td>${t.planejado}</td><td>${t.entregue}</td><td class="${t.pendente<0?'pendente-neg':'pendente-pos'}">${t.pendente}</td></tr>`;
+            }).join('')}
+          </tbody>
+          <tfoot><tr><td colspan="2">Total do mês</td><td>${totals.planejado}</td><td>${totals.entregue}</td><td class="${totals.pendente<0?'pendente-neg':'pendente-pos'}">${totals.pendente}</td></tr></tfoot>
+        </table>
+        </div>
+      </div>`;
+  }).join('');
+  area.querySelectorAll('[data-action="fechar-mes"]').forEach(btn => {
+    btn.addEventListener('click', () => closeMonth(btn.dataset.inicio, btn.dataset.fim, btn.dataset.titulo));
+  });
+}
+
+function renderAnoArea(){
+  const groups = groupOpenClosuresByYear();
+  const area = document.getElementById('desempenhoArea');
+  if(groups.length === 0){
+    area.innerHTML = `<div class="panel"><div class="placeholder">Nenhum mês fechado ainda. Feche um mês na aba MÊS pra começar a acumular o histórico anual.</div></div>`;
+    return;
+  }
+  area.innerHTML = groups.map(g => {
+    const yearStart = new Date(g.year,0,1), yearEnd = new Date(g.year,11,31);
+    const monthIds = g.items.map(c=>c.id);
+    const weekIdsInYear = CLOSURES.filter(c => c.tipo==='semana' && monthIds.includes(c.parent_id)).map(c=>c.id);
+    const totals = aggregateEntries(weekIdsInYear);
+    const sorted = [...g.items].sort((a,b) => a.data_inicio < b.data_inicio ? 1 : -1);
+    return `
+      <div class="panel" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+          <h3 style="margin:0;">${g.year} <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(${g.items.length} mês${g.items.length>1?'es':''} fechado${g.items.length>1?'s':''})</span></h3>
+          <button class="btn-ghost" data-action="fechar-ano" data-inicio="${dateToISO(yearStart)}" data-fim="${dateToISO(yearEnd)}" data-titulo="${g.year}">Fechar Ano</button>
+        </div>
+        <div class="table-scroll">
+        <table class="desempenho-table">
+          <thead><tr><th>Mês</th><th>Período</th><th>Planejado</th><th>Entregue</th><th>Pendente</th></tr></thead>
+          <tbody>
+            ${sorted.map(c => {
+              const weekIds = CLOSURES.filter(w => w.tipo==='semana' && w.parent_id===c.id).map(w=>w.id);
+              const t = aggregateEntries(weekIds);
+              return `<tr><td>${esc(c.titulo)}</td><td>${fmtDate(c.data_inicio)} – ${fmtDate(c.data_fim)}</td><td>${t.planejado}</td><td>${t.entregue}</td><td class="${t.pendente<0?'pendente-neg':'pendente-pos'}">${t.pendente}</td></tr>`;
+            }).join('')}
+          </tbody>
+          <tfoot><tr><td colspan="2">Total do ano</td><td>${totals.planejado}</td><td>${totals.entregue}</td><td class="${totals.pendente<0?'pendente-neg':'pendente-pos'}">${totals.pendente}</td></tr></tfoot>
+        </table>
+        </div>
+      </div>`;
+  }).join('');
+  area.querySelectorAll('[data-action="fechar-ano"]').forEach(btn => {
+    btn.addEventListener('click', () => closeYear(btn.dataset.inicio, btn.dataset.fim, btn.dataset.titulo));
+  });
+}
+
 /* ---------------- Planejamento (Lote + Planejado/Entregue, igual pra todas) ---------------- */
 function renderPlanPanel(){
   document.getElementById('planPanel').innerHTML = planTemplate(activePlanTab);
@@ -354,6 +550,11 @@ function attachPlanHandlers(){
       if(activePlanTab === 'producao') row.obs = fd.get('obs') || '';
       await insertRow(activePlanTab, row);
       PLAN[activePlanTab].push(row);
+      ALL_ENTRIES.push({
+        id: row.id, category: activePlanTab, data_registro: row.data, lote: row.lote,
+        planejado: qty(row.planejado), realizado: 0,
+        entrega: row.entrega || null, obs: row.obs || null, closure_id: null,
+      });
       renderPlanPanel(); renderKPIs();
     }catch(err){
       console.error('Erro ao registrar:', err);
@@ -364,7 +565,13 @@ function attachPlanHandlers(){
     inp.addEventListener('change', async () => {
       try{
         const row = PLAN[activePlanTab].find(r => r.id === inp.dataset.id);
-        if(row){ await updateRealizado(row.id, inp.value); row.realizado = inp.value; renderPlanPanel(); renderKPIs(); }
+        if(row){
+          await updateRealizado(row.id, inp.value);
+          row.realizado = inp.value;
+          const raw = ALL_ENTRIES.find(r => r.id === row.id);
+          if(raw) raw.realizado = qty(inp.value);
+          renderPlanPanel(); renderKPIs();
+        }
       }catch(err){
         console.error('Erro ao atualizar quantidade:', err);
         alert('Erro ao atualizar quantidade: ' + err.message);
@@ -376,6 +583,7 @@ function attachPlanHandlers(){
       try{
         await deleteRow(btn.dataset.id);
         PLAN[activePlanTab] = PLAN[activePlanTab].filter(r => r.id !== btn.dataset.id);
+        ALL_ENTRIES = ALL_ENTRIES.filter(r => r.id !== btn.dataset.id);
         renderPlanPanel(); renderKPIs();
       }catch(err){
         console.error('Erro ao excluir:', err);
@@ -386,12 +594,35 @@ function attachPlanHandlers(){
 }
 
 document.getElementById('finalizarBtn').addEventListener('click', renderDesempenho);
+document.getElementById('fecharSemanaBtn').addEventListener('click', closeWeek);
+
+function renderPeriodArea(){
+  const weekOnlyIds = ['finalizarBtn','relatorioBtn','fecharSemanaBtn'];
+  weekOnlyIds.forEach(id => { document.getElementById(id).style.display = activePeriod==='week' ? '' : 'none'; });
+
+  const sub = document.getElementById('desempenhoSub');
+  if(activePeriod==='week'){
+    document.getElementById('kpiStrip').style.display = '';
+    sub.textContent = '— gerado ao clicar em Finalizar Métricas';
+    renderKPIs();
+    desempenhoGenerated = false;
+    document.getElementById('desempenhoArea').innerHTML = `<div class="panel"><div class="placeholder">Preencha o planejamento abaixo e clique em "Finalizar Métricas" para gerar os gráficos e o desempenho da semana.</div></div>`;
+  } else if(activePeriod==='month'){
+    document.getElementById('kpiStrip').style.display = 'none';
+    sub.textContent = '— histórico de semanas fechadas';
+    renderMesArea();
+  } else {
+    document.getElementById('kpiStrip').style.display = 'none';
+    sub.textContent = '— histórico de meses fechados';
+    renderAnoArea();
+  }
+}
 
 document.getElementById('periodToggle').addEventListener('click', e => {
   const btn = e.target.closest('button[data-period]'); if(!btn) return;
   activePeriod = btn.dataset.period;
   document.querySelectorAll('#periodToggle button').forEach(b => b.classList.toggle('active', b === btn));
-  renderKPIs();
+  renderPeriodArea();
 });
 document.getElementById('planTabs').addEventListener('click', e => {
   const btn = e.target.closest('button[data-plan]'); if(!btn) return;
@@ -413,22 +644,34 @@ function gerarRelatorio(){
   const range = currentRange();
   const geradoEm = fmtDate(todayISO()) + ' ' + new Date().toTimeString().slice(0,5);
 
+  const resumo = CATS.map(cat => {
+    const rows = PLAN[cat].filter(r => inRange(r.data, range));
+    const planejado = rows.reduce((s,r)=>s+qty(r.planejado),0);
+    const entregue = rows.reduce((s,r)=>s+qty(r.realizado),0);
+    const desempenho = planejado>0 ? Math.round((entregue/planejado)*100) : 0;
+    return { cat, label:PLAN_CONFIG[cat].label, planejado, entregue, pendente: entregue - planejado, desempenho };
+  });
+  const nonZero = resumo.filter(r=>r.entregue>0);
+
   let html = `
     <div class="relatorio-title">KAOWZ — Relatório de Operação</div>
     <div class="relatorio-sub">${esc(periodLabel(range))} · Gerado em ${geradoEm}</div>
+    <div class="relatorio-section">
+      <h3>Planejado vs. Entregue por Categoria</h3>
+      <div class="relatorio-chart">${svgBarChart(resumo.map(r=>r.label), [{data:resumo.map(r=>r.planejado)},{data:resumo.map(r=>r.entregue)}], ['#3A3B3E','#FF6A1A'])}</div>
+      ${legendHTML([{color:'#3A3B3E',label:'Planejado'},{color:'#FF6A1A',label:'Entregue'}])}
+    </div>
+    <div class="relatorio-section">
+      <h3>Composição do Entregue</h3>
+      <div class="relatorio-chart relatorio-chart-sm">${svgDonut(nonZero.length?nonZero.map(r=>r.label):['Sem dados'], nonZero.length?nonZero.map(r=>r.entregue):[1], ['#FF6A1A','#C2560A','#8A3B08','#5A5B5E','#8E8D89','#3A3B3E'])}</div>
+      ${legendHTML(nonZero.map((r,i)=>({color:['#FF6A1A','#C2560A','#8A3B08','#5A5B5E','#8E8D89','#3A3B3E'][i%6],label:r.label})))}
+    </div>
     <div class="relatorio-section">
       <h3>Resumo Geral</h3>
       <table class="relatorio-table">
         <thead><tr><th>Categoria</th><th>Planejado</th><th>Entregue</th><th>Pendente</th><th>Desempenho</th></tr></thead>
         <tbody>
-          ${CATS.map(cat => {
-            const rows = PLAN[cat].filter(r => inRange(r.data, range));
-            const planejado = rows.reduce((s,r)=>s+qty(r.planejado),0);
-            const entregue = rows.reduce((s,r)=>s+qty(r.realizado),0);
-            const pendente = entregue - planejado;
-            const desempenho = planejado>0 ? Math.round((entregue/planejado)*100) : 0;
-            return `<tr><td>${esc(PLAN_CONFIG[cat].label)}</td><td>${planejado}</td><td>${entregue}</td><td>${pendente}</td><td>${cat==='encomendadas'?'—':desempenho+'%'}</td></tr>`;
-          }).join('')}
+          ${resumo.map(r => `<tr><td>${esc(r.label)}</td><td>${r.planejado}</td><td>${r.entregue}</td><td>${r.pendente}</td><td>${r.cat==='encomendadas'?'—':r.desempenho+'%'}</td></tr>`).join('')}
         </tbody>
       </table>
     </div>`;
@@ -461,6 +704,6 @@ document.getElementById('relatorioBtn').addEventListener('click', gerarRelatorio
 (async function init(){
   document.getElementById('kpiStrip').innerHTML = `<div style="color:var(--text-dim);padding:20px 4px;">Carregando dados…</div>`;
   await loadData();
-  renderKPIs();
+  renderPeriodArea();
   renderPlanPanel();
 })();

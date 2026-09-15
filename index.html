@@ -19,6 +19,7 @@
     <div class="period-toggle" id="periodToggle">
       <button data-period="week" class="active">SEMANA</button>
       <button data-period="month">MÊS</button>
+      <button data-period="year">ANO</button>
     </div>
   </header>
 
@@ -26,7 +27,8 @@
 
   <h2 class="section-title">
     Desempenho
-    <span style="font-size:11px;color:var(--text-dim);font-weight:400;text-transform:none;font-family:'Inter',sans-serif;">— gerado ao clicar em Finalizar Métricas</span>
+    <span id="desempenhoSub" style="font-size:11px;color:var(--text-dim);font-weight:400;text-transform:none;font-family:'Inter',sans-serif;">— gerado ao clicar em Finalizar Métricas</span>
+    <button class="btn-ghost" id="fecharSemanaBtn">Fechar Semana</button>
     <button class="btn btn-primary-alt" id="relatorioBtn">Gerar Relatório</button>
   </h2>
   <div id="desempenhoArea">
