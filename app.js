@@ -186,7 +186,7 @@ async function deleteRow(id){
 function renderKPIs(){
   const range = currentRange();
   let totalPlan = 0, totalReal = 0;
-  CATS.forEach(cat => {
+  CATS.filter(cat => cat !== 'encomendadas').forEach(cat => {
     PLAN[cat].filter(r => inRange(r.data, range)).forEach(r => { totalPlan += qty(r.planejado); totalReal += qty(r.realizado); });
   });
   const pendente = totalReal - totalPlan;
